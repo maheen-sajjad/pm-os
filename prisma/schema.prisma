@@ -1,0 +1,398 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============== NextAuth Models ==============
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ============== Application Models ==============
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  LEAD
+  MEMBER
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  PAUSED
+  PENDING_APPROVAL
+  COMPLETED
+}
+
+enum TaskStatus {
+  BACKLOG
+  IN_PROGRESS
+  REVIEW
+  DONE
+}
+
+enum TaskCategory {
+  BACKEND
+  FRONTEND
+  DESIGN
+  QA
+  DEVOPS
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum PRStatus {
+  OPEN
+  MERGED
+  CLOSED
+}
+
+enum KBEntryCategory {
+  DOCUMENTATION
+  GUIDE
+  REFERENCE
+  MEETING_NOTES
+  DECISION
+  OTHER
+}
+
+// ============== Team Models ==============
+
+enum TeamType {
+  DEVELOPMENT
+  QA
+  DESIGN
+  DEVOPS
+  UAT
+}
+
+enum ApprovalType {
+  DEV
+  QA
+  UI
+  UAT
+}
+
+model Team {
+  id        String     @id @default(cuid())
+  name      String
+  type      TeamType
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  members UserTeam[]
+
+  @@map("teams")
+}
+
+model UserTeam {
+  id       String   @id @default(cuid())
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamId   String
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  joinedAt DateTime @default(now())
+
+  @@unique([userId, teamId])
+  @@map("user_teams")
+}
+
+model User {
+  id                  String    @id @default(cuid())
+  name                String?
+  email               String    @unique
+  emailVerified       DateTime?
+  image               String?
+  password            String?
+  role                UserRole  @default(MEMBER)
+  canApproveCreatives Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  // Relations
+  accounts         Account[]
+  sessions         Session[]
+  ledProjects      Project[]   @relation("ProjectLead")
+  assignedTasks    Task[]      @relation("TaskAssignee")
+  createdProjects  Project[]   @relation("ProjectCreator")
+  createdTasks     Task[]      @relation("TaskCreator")
+  approvedProjects Project[]   @relation("ProjectApprover")
+  projectApprovals ProjectApproval[] @relation("ProjectApprovalApprover")
+  teams            UserTeam[]
+  createdKBEntries KnowledgeBaseEntry[] @relation("KBEntryCreator")
+
+  @@map("users")
+}
+
+model Project {
+  id             String        @id @default(cuid())
+  name           String
+  prefix         String?       @unique // Short prefix derived from name, e.g., "UD" for "User Dashboard" (nullable for migration)
+  description    String?       @db.Text
+  status         ProjectStatus @default(PLANNING)
+  totalTasks     Int           @default(0)
+  completedTasks Int           @default(0)
+  nextTaskNumber Int           @default(1) // Counter for sequential task IDs
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  // Relations
+  leadId       String?
+  lead         User?       @relation("ProjectLead", fields: [leadId], references: [id])
+  creatorId    String
+  creator      User        @relation("ProjectCreator", fields: [creatorId], references: [id])
+  approvedById String?
+  approvedBy   User?       @relation("ProjectApprover", fields: [approvedById], references: [id])
+  approvedAt   DateTime?
+  repo          GitHubRepo?
+  features      Feature[]
+  knowledgeBase KnowledgeBaseEntry[]
+  approvals     ProjectApproval[]
+
+  @@map("projects")
+}
+
+model ProjectApproval {
+  id         String       @id @default(cuid())
+  type       ApprovalType
+  approved   Boolean      @default(false)
+  approvedAt DateTime?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  // Relations
+  projectId    String
+  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  approvedById String?
+  approvedBy   User?   @relation("ProjectApprovalApprover", fields: [approvedById], references: [id])
+
+  @@unique([projectId, type])
+  @@map("project_approvals")
+}
+
+model GitHubRepo {
+  id        String   @id @default(cuid())
+  name      String
+  fullName  String   // Removed @unique - same repo can be linked to multiple projects
+  url       String
+  isPrivate Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  projectId    String       @unique // Each project can still only have ONE repo
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  pullRequests PullRequest[]
+  codeFiles    CodeFile[]
+  indexStatus  CodeIndexStatus?
+
+  @@index([fullName]) // Add index for queries by repo name
+  @@map("github_repos")
+}
+
+model Feature {
+  id          String   @id @default(cuid())
+  name        String
+  description String?  @db.Text
+  docContent  String?  @db.Text
+  progress    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks     Task[]
+
+  @@map("features")
+}
+
+model Task {
+  id          String       @id @default(cuid())
+  taskNumber  Int?         // Sequential number within project (e.g., 1, 2, 3) - nullable for migration
+  title       String
+  description String?      @db.Text
+  status      TaskStatus   @default(BACKLOG)
+  category    TaskCategory
+  priority    TaskPriority @default(MEDIUM)
+  order       Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Relations
+  featureId   String
+  feature     Feature      @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  assigneeId  String?
+  assignee    User?        @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  creatorId   String?
+  creator     User?        @relation("TaskCreator", fields: [creatorId], references: [id])
+  linkedPRId  String?      @unique
+  linkedPR    PullRequest? @relation(fields: [linkedPRId], references: [id])
+
+  @@map("tasks")
+}
+
+model PullRequest {
+  id           String   @id @default(cuid())
+  number       Int
+  title        String
+  url          String
+  status       PRStatus @default(OPEN)
+  author       String
+  commitsCount Int      @default(0)
+  branchName   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  repoId String
+  repo   GitHubRepo @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  task   Task?
+
+  @@unique([repoId, number])
+  @@map("pull_requests")
+}
+
+// ============== Knowledge Base Models ==============
+
+model KnowledgeBaseEntry {
+  id          String          @id @default(cuid())
+  title       String
+  content     String          @db.Text
+  category    KBEntryCategory @default(DOCUMENTATION)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  // Relations
+  projectId   String
+  project     Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  creatorId   String
+  creator     User            @relation("KBEntryCreator", fields: [creatorId], references: [id])
+  attachments KBAttachment[]
+
+  @@index([projectId])
+  @@map("knowledge_base_entries")
+}
+
+model KBAttachment {
+  id          String   @id @default(cuid())
+  fileName    String
+  fileType    String
+  fileSize    Int
+  storagePath String
+  createdAt   DateTime @default(now())
+
+  // Relations
+  entryId     String
+  entry       KnowledgeBaseEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@map("kb_attachments")
+}
+
+// ============== Code Indexing Models ==============
+
+enum CodeFileType {
+  SOURCE
+  CONFIG
+  DOCS
+  STYLE
+  OTHER
+}
+
+model CodeFile {
+  id        String       @id @default(cuid())
+  filePath  String
+  fileName  String
+  extension String
+  fileType  CodeFileType
+  sha       String
+  sizeBytes Int
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  // Relations
+  repoId String
+  repo   GitHubRepo @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  chunks CodeChunk[]
+
+  @@unique([repoId, filePath])
+  @@index([repoId])
+  @@index([fileName])
+  @@map("code_files")
+}
+
+model CodeChunk {
+  id         String   @id @default(cuid())
+  content    String   @db.Text
+  startLine  Int
+  endLine    Int
+  chunkIndex Int
+  keywords   String   @db.Text
+  createdAt  DateTime @default(now())
+
+  // Relations
+  fileId String
+  file   CodeFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([fileId])
+  @@map("code_chunks")
+}
+
+model CodeIndexStatus {
+  id                 String    @id @default(cuid())
+  lastIndexedAt      DateTime?
+  lastCommitSha      String?
+  totalFiles         Int       @default(0)
+  totalChunks        Int       @default(0)
+  indexingInProgress Boolean   @default(false)
+  lastError          String?   @db.Text
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  // Relations
+  repoId String     @unique
+  repo   GitHubRepo @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@map("code_index_status")
+}
